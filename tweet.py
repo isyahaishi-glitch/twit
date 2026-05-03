@@ -22,49 +22,53 @@ COOKIES = [
 
 results = []
 
+
 async def scrape():
     global results
     temp = []
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)  # ← must be True on Railway
+        browser = await p.chromium.launch(headless=True)
         context = await browser.new_context()
         await context.add_cookies(COOKIES)
-        page = await context.new_page()
 
-        for username in USERNAMES:
+        async def scrape_one(username):
+            page = await context.new_page()
             try:
-                await page.goto(f"https://x.com/{username}",
+                await page.goto(
+                    f"https://x.com/{username}",
                     wait_until="domcontentloaded",
-                    timeout=60000)
-
+                    timeout=60000,
+                )
                 await page.wait_for_selector("article", timeout=15000)
-                await asyncio.sleep(3)
+                await asyncio.sleep(2)
 
-                tweet = await page.query_selector("article")
-
-                if tweet:
+                tweets = await page.query_selector_all("article")
+                for tweet in tweets[:2]:  # up to 2 tweets per account
                     text = await tweet.inner_text()
-
-                    images = []
                     imgs = await tweet.query_selector_all("img")
+                    images = []
                     for img in imgs:
                         src = await img.get_attribute("src")
                         if src and "pbs.twimg.com/media" in src:
                             images.append(src)
-
                     temp.append({
                         "source": username,
                         "text": text,
                         "created_at": "",
-                        "image_url": images[0] if images else None
+                        "image_url": images[0] if images else None,
                     })
-
             except Exception as e:
                 print(f"Error scraping {username}: {e}")
-                continue
+            finally:
+                await page.close()
 
-            await asyncio.sleep(5)
+        # Scrape 5 accounts at a time
+        chunk_size = 5
+        for i in range(0, len(USERNAMES), chunk_size):
+            chunk = USERNAMES[i : i + chunk_size]
+            await asyncio.gather(*[scrape_one(u) for u in chunk])
+            await asyncio.sleep(3)  # pause between chunks
 
         await browser.close()
 
@@ -90,7 +94,7 @@ def route_tweets():
 
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 5000))  # ← Railway injects PORT
+    port = int(os.getenv("PORT", 5000))
     thread = threading.Thread(target=run_scraper, daemon=True)
     thread.start()
     app.run(debug=False, host="0.0.0.0", port=port)
